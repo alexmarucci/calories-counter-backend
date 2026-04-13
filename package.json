@@ -1,0 +1,16 @@
+{
+  "name": "openfoodfacts-search-api",
+  "version": "1.0.0",
+  "description": "Meilisearch-backed search and autocomplete API for Open Food Facts",
+  "type": "module",
+  "scripts": {
+    "start": "node src/api.js",
+    "index": "node src/indexer.js",
+    "setup": "node src/setupIndex.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^5.1.0",
+    "meilisearch": "^0.49.0"
+  }
+}
