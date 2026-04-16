@@ -19,8 +19,30 @@ function extractImageUrl(code, images) {
   const frontData = images[frontKey];
   if (!frontData || !frontData.rev) return null;
   // Build Open Food Facts image URL
-  const codePath = code.replace(/(.{3})/g, "$1/").slice(0, -1);
+  const codePath = code.slice(0, 3) + "/" + code.slice(3, 6) + "/" + code.slice(6, 9) + "/" + code.slice(9);
   return `https://images.openfoodfacts.org/images/products/${codePath}/${frontKey}.${frontData.rev}.400.jpg`;
+}
+
+function extractNutriments(nutriments) {
+  if (!nutriments) return null;
+  const get = (key) => {
+    const val = nutriments[key];
+    return typeof val === "number" ? val : null;
+  };
+  const result = {
+    energy_kcal_100g: get("energy-kcal_100g"),
+    fat_100g: get("fat_100g"),
+    saturated_fat_100g: get("saturated-fat_100g"),
+    carbohydrates_100g: get("carbohydrates_100g"),
+    sugars_100g: get("sugars_100g"),
+    proteins_100g: get("proteins_100g"),
+    fiber_100g: get("fiber_100g"),
+    salt_100g: get("salt_100g"),
+    sodium_100g: get("sodium_100g"),
+  };
+  // Only return if at least one value exists
+  if (Object.values(result).every((v) => v === null)) return null;
+  return result;
 }
 
 function mapRecord(record) {
@@ -37,8 +59,13 @@ function mapRecord(record) {
     nutriscore_grade: record.nutriscore_grade || null,
     countries: record.countries || "",
     quantity: record.quantity || "",
+    product_quantity: record.product_quantity || null,
+    product_quantity_unit: record.product_quantity_unit || null,
     unique_scans_n: record.unique_scans_n || 0,
     image_url: extractImageUrl(record.code, record.images),
+    nutriments: extractNutriments(record.nutriments),
+    allergens_tags: record.allergens_tags || [],
+    ingredients_text: record.ingredients_text || "",
   };
 }
 
@@ -131,7 +158,7 @@ async function runIndexer() {
   console.log(`  Skipped:   ${totalSkipped.toLocaleString()}`);
 }
 
-export { extractImageUrl, mapRecord, runIndexer };
+export { extractImageUrl, extractNutriments, mapRecord, runIndexer };
 
 const isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"));
 if (isMain) {

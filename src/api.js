@@ -10,6 +10,9 @@ const MAX_QUERY_LENGTH = 200;
 const MAX_LIMIT = 100;
 const MAX_AUTOCOMPLETE_LIMIT = 20;
 
+export { sanitiseQuery, clampInt, escapeFilterValue, buildFilters };
+export { app };
+
 function sanitiseQuery(value) {
   if (!value || typeof value !== "string") return null;
   const trimmed = value.trim();
@@ -71,7 +74,12 @@ app.get("/v1/search", async (req, res) => {
         "categories",
         "nutriscore_grade",
         "quantity",
+        "product_quantity",
+        "product_quantity_unit",
         "image_url",
+        "nutriments",
+        "allergens_tags",
+        "ingredients_text",
       ],
     });
 
@@ -83,6 +91,25 @@ app.get("/v1/search", async (req, res) => {
     });
   } catch (err) {
     console.error("Search failed:", err.message);
+    res.status(503).json({ error: "Search service unavailable" });
+  }
+});
+
+// Product detail endpoint
+app.get("/v1/products/:code", async (req, res) => {
+  const code = req.params.code;
+  if (!code || !/^\d+$/.test(code)) {
+    return res.status(400).json({ error: "Product code must be a numeric barcode" });
+  }
+
+  try {
+    const doc = await index.getDocument(code);
+    res.json(doc);
+  } catch (err) {
+    if (err.code === "document_not_found" || err.statusCode === 404) {
+      return res.status(404).json({ error: `Product ${code} not found` });
+    }
+    console.error("Product lookup failed:", err.message);
     res.status(503).json({ error: "Search service unavailable" });
   }
 });
@@ -115,6 +142,11 @@ app.get("/v1/autocomplete", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Search API running on port ${PORT}`);
-});
+export default app;
+
+const isMain = process.argv[1] && import.meta.url.endsWith(process.argv[1].replace(/\\/g, "/"));
+if (isMain) {
+  app.listen(PORT, () => {
+    console.log(`Search API running on port ${PORT}`);
+  });
+}
