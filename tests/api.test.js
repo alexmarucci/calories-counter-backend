@@ -11,6 +11,7 @@ const mockMeilisearchClient = {
 jest.unstable_mockModule("../src/meilisearchClient.js", () => ({
   meilisearchClient: mockMeilisearchClient,
   INDEX_NAME: "products",
+  DEBUG: false,
 }));
 
 const { default: app } = await import("../src/api.js");

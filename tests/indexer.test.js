@@ -50,19 +50,78 @@ describe("extractImageUrl", () => {
 });
 
 describe("extractNutriments", () => {
-  it("extracts per-100g nutritional fields", () => {
-    const nutriments = {
-      "energy-kcal_100g": 250,
-      "fat_100g": 12,
-      "saturated-fat_100g": 3.5,
-      "carbohydrates_100g": 30,
-      "sugars_100g": 15,
-      "proteins_100g": 8,
-      "fiber_100g": 2,
-      "salt_100g": 0.5,
-      "sodium_100g": 0.2,
+  it("extracts from nutrition.aggregated_set (per-100g, normalised)", () => {
+    const record = {
+      nutrition: {
+        aggregated_set: {
+          per: "100g",
+          nutrients: {
+            "energy-kcal": { value: 370, unit: "kcal", source: "packaging" },
+            "fat": { value: 7.5, unit: "g", source: "packaging" },
+            "saturated-fat": { value: 1.3, unit: "g", source: "packaging" },
+            "carbohydrates": { value: 59.6, unit: "g", source: "packaging" },
+            "sugars": { value: 1.0, unit: "g", source: "packaging" },
+            "proteins": { value: 11.7, unit: "g", source: "packaging" },
+            "fiber": { value: 8.4, unit: "g", source: "packaging" },
+            "salt": { value: 0.01, unit: "g", source: "packaging" },
+            "sodium": { value: 0.004, unit: "g", source: "packaging" },
+          },
+        },
+        input_sets: [],
+      },
+      nutriments: {},
     };
-    const result = extractNutriments(nutriments);
+    const result = extractNutriments(record);
+    expect(result).toEqual({
+      energy_kcal_100g: 370,
+      fat_100g: 7.5,
+      saturated_fat_100g: 1.3,
+      carbohydrates_100g: 59.6,
+      sugars_100g: 1,
+      proteins_100g: 11.7,
+      fiber_100g: 8.4,
+      salt_100g: 0.01,
+      sodium_100g: 0.004,
+    });
+  });
+
+  it("falls back to input_sets when aggregated_set is missing", () => {
+    const record = {
+      nutrition: {
+        input_sets: [{
+          per: "100g",
+          nutrients: {
+            "energy-kcal": { value: 617, unit: "kcal" },
+            "fat": { value: 48, unit: "g" },
+            "salt": { value: 0.01, unit: "g" },
+            "sodium": { value: 0.004, unit: "g" },
+          },
+        }],
+      },
+      nutriments: {},
+    };
+    const result = extractNutriments(record);
+    expect(result).not.toBeNull();
+    expect(result.energy_kcal_100g).toBe(617);
+    expect(result.fat_100g).toBe(48);
+  });
+
+  it("falls back to top-level nutriments._100g fields", () => {
+    const record = {
+      nutrition: {},
+      nutriments: {
+        "energy-kcal_100g": 250,
+        "fat_100g": 12,
+        "saturated-fat_100g": 3.5,
+        "carbohydrates_100g": 30,
+        "sugars_100g": 15,
+        "proteins_100g": 8,
+        "fiber_100g": 2,
+        "salt_100g": 0.5,
+        "sodium_100g": 0.2,
+      },
+    };
+    const result = extractNutriments(record);
     expect(result).toEqual({
       energy_kcal_100g: 250,
       fat_100g: 12,
@@ -76,7 +135,26 @@ describe("extractNutriments", () => {
     });
   });
 
-  it("returns null for all missing values", () => {
+  it("prefers aggregated_set > input_sets > nutriments > nutriscore", () => {
+    const record = {
+      nutrition: {
+        aggregated_set: {
+          per: "100g",
+          nutrients: { "proteins": { value: 1, unit: "g" } },
+        },
+        input_sets: [{
+          per: "100g",
+          nutrients: { "proteins": { value: 2, unit: "g" } },
+        }],
+      },
+      nutriments: { "proteins_100g": 3 },
+      nutriscore: { "2021": { data: { proteins: 4, proteins_value: 4 } } },
+    };
+    const result = extractNutriments(record);
+    expect(result.proteins_100g).toBe(1); // aggregated_set wins
+  });
+
+  it("returns null for record with no nutrition data", () => {
     expect(extractNutriments({})).toBeNull();
   });
 
@@ -89,24 +167,149 @@ describe("extractNutriments", () => {
   });
 
   it("sets missing fields to null when some values present", () => {
-    const nutriments = { "energy-kcal_100g": 100, "fat_100g": 5 };
-    const result = extractNutriments(nutriments);
+    const record = {
+      nutriments: { "energy-kcal_100g": 100, "fat_100g": 5 },
+    };
+    const result = extractNutriments(record);
     expect(result.energy_kcal_100g).toBe(100);
     expect(result.fat_100g).toBe(5);
     expect(result.proteins_100g).toBeNull();
     expect(result.fiber_100g).toBeNull();
   });
 
-  it("ignores non-numeric values", () => {
-    const nutriments = { "energy-kcal_100g": "high" };
-    expect(extractNutriments(nutriments)).toBeNull();
+  it("ignores non-numeric values in nutriments fallback", () => {
+    const record = { nutriments: { "energy-kcal_100g": "high" } };
+    expect(extractNutriments(record)).toBeNull();
   });
 
-  it("handles mix of numeric and non-numeric", () => {
-    const nutriments = { "energy-kcal_100g": 200, "fat_100g": "low" };
-    const result = extractNutriments(nutriments);
-    expect(result.energy_kcal_100g).toBe(200);
-    expect(result.fat_100g).toBeNull();
+  it("ignores non-numeric values in nutrition nutrients", () => {
+    const record = {
+      nutrition: {
+        input_sets: [{
+          per: "100g",
+          nutrients: { "energy-kcal": { value: "high", unit: "kcal" } },
+        }],
+      },
+    };
+    expect(extractNutriments(record)).toBeNull();
+  });
+
+  it("converts mg to g for sodium and salt from nutrition.input_sets", () => {
+    const record = {
+      nutrition: {
+        input_sets: [{
+          per: "100g",
+          nutrients: {
+            "energy-kcal": { value: 100, unit: "kcal" },
+            "sodium": { value: 400, unit: "mg" },
+            "salt": { value: 1000, unit: "mg" },
+          },
+        }],
+      },
+    };
+    const result = extractNutriments(record);
+    expect(result.sodium_100g).toBe(0.4);
+    expect(result.salt_100g).toBe(1.0);
+  });
+
+  it("keeps g values as-is when unit is g", () => {
+    const record = {
+      nutrition: {
+        input_sets: [{
+          per: "100g",
+          nutrients: {
+            "sodium": { value: 0.4, unit: "g" },
+            "salt": { value: 1.0, unit: "g" },
+          },
+        }],
+      },
+    };
+    const result = extractNutriments(record);
+    expect(result.sodium_100g).toBe(0.4);
+    expect(result.salt_100g).toBe(1.0);
+  });
+
+  it("falls back to nutriscore.2021.data (converts kJ to kcal)", () => {
+    const record = {
+      nutrition: {},
+      nutriments: {},
+      nutriscore: {
+        "2021": {
+          data: {
+            energy: 2524,
+            energy_value: 2524,
+            proteins_value: 11.7,
+            sugars_value: 1.0,
+            saturated_fat_value: 1.3,
+            fiber_value: 8.4,
+            sodium_value: 4,
+            fat: 5,
+            fiber: 8.4,
+            proteins: 11.7,
+            sugars: 1.0,
+            sodium: 4,
+            saturated_fat: 1.3,
+          },
+        },
+      },
+    };
+    const result = extractNutriments(record);
+    expect(result).not.toBeNull();
+    expect(result.energy_kcal_100g).toBe(603); // 2524 / 4.184 rounded
+    expect(result.proteins_100g).toBe(11.7);
+    expect(result.sugars_100g).toBe(1.0);
+    expect(result.fiber_100g).toBe(8.4);
+    expect(result.sodium_100g).toBe(4);
+    expect(result.salt_100g).toBe(10); // sodium * 2.5
+  });
+
+  it("falls back to nutriscore.2023.data as well", () => {
+    const record = {
+      nutrition: {},
+      nutriments: {},
+      nutriscore: {
+        "2023": {
+          data: {
+            proteins: 5,
+            sugars: 3,
+          },
+        },
+      },
+    };
+    const result = extractNutriments(record);
+    expect(result).not.toBeNull();
+    expect(result.proteins_100g).toBe(5);
+    expect(result.sugars_100g).toBe(3);
+  });
+
+  it("prefers input_sets over nutriments when no aggregated_set", () => {
+    const record = {
+      nutrition: {
+        input_sets: [{
+          per: "100g",
+          nutrients: { "proteins": { value: 2, unit: "g" } },
+        }],
+      },
+      nutriments: { "proteins_100g": 3 },
+    };
+    const result = extractNutriments(record);
+    expect(result.proteins_100g).toBe(2); // input_sets beats nutriments
+  });
+
+  it("uses nutriments when aggregated_set and input_sets missing the field", () => {
+    const record = {
+      nutrition: {
+        aggregated_set: {
+          per: "100g",
+          nutrients: { "energy-kcal": { value: 100, unit: "kcal" } },
+        },
+        input_sets: [],
+      },
+      nutriments: { "proteins_100g": 5 },
+    };
+    const result = extractNutriments(record);
+    expect(result.energy_kcal_100g).toBe(100);
+    expect(result.proteins_100g).toBe(5);
   });
 });
 

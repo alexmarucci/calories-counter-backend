@@ -16,6 +16,10 @@ describe("INDEX_CONFIG", () => {
       "nutriscore_grade",
       "brands",
       "countries",
+      "nova_group",
+      "labels_tags",
+      "ingredients_analysis_tags",
+      "allergens_tags",
     ]);
   });
 

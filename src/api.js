@@ -1,5 +1,5 @@
 import express from "express";
-import { meilisearchClient, INDEX_NAME } from "./meilisearchClient.js";
+import { meilisearchClient, INDEX_NAME, DEBUG } from "./meilisearchClient.js";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -33,7 +33,6 @@ function escapeFilterValue(value) {
 function buildFilters(params) {
   const filters = [];
   if (params.nutriscore) {
-    // Nutriscore is a single grade character a-e
     if (!/^[a-e]$/i.test(params.nutriscore)) return undefined;
     filters.push(`nutriscore_grade = ${params.nutriscore.toLowerCase()}`);
   }
@@ -46,6 +45,14 @@ function buildFilters(params) {
     const country = sanitiseQuery(params.country);
     if (!country) return undefined;
     filters.push(`countries = "${escapeFilterValue(country)}"`);
+  }
+  if (params.nova) {
+    const nova = parseInt(params.nova, 10);
+    if (nova >= 1 && nova <= 4) filters.push(`nova_group = ${nova}`);
+  }
+  if (params.label) {
+    const label = sanitiseQuery(params.label);
+    if (label) filters.push(`labels_tags = "${escapeFilterValue(label)}"`);
   }
   return filters.length > 0 ? filters.join(" AND ") : undefined;
 }
@@ -72,14 +79,25 @@ app.get("/v1/search", async (req, res) => {
         "product_name",
         "brands",
         "categories",
+        "generic_name",
         "nutriscore_grade",
+        "countries",
         "quantity",
         "product_quantity",
         "product_quantity_unit",
+        "serving_quantity",
+        "serving_quantity_unit",
         "image_url",
         "nutriments",
         "allergens_tags",
         "ingredients_text",
+        "ingredients",
+        "nova_group",
+        "labels_tags",
+        "ingredients_analysis_tags",
+        "additives_n",
+        "stores",
+        "unique_scans_n",
       ],
     });
 
@@ -89,6 +107,7 @@ app.get("/v1/search", async (req, res) => {
       page,
       limit,
     });
+    if (DEBUG) console.log("[search]", q, `→ ${results.hits.length} hits`);
   } catch (err) {
     console.error("Search failed:", err.message);
     res.status(503).json({ error: "Search service unavailable" });
@@ -105,6 +124,7 @@ app.get("/v1/products/:code", async (req, res) => {
   try {
     const doc = await index.getDocument(code);
     res.json(doc);
+    if (DEBUG) console.log("[product]", code, `→ ${doc.product_name}`);
   } catch (err) {
     if (err.code === "document_not_found" || err.statusCode === 404) {
       return res.status(404).json({ error: `Product ${code} not found` });
@@ -112,6 +132,11 @@ app.get("/v1/products/:code", async (req, res) => {
     console.error("Product lookup failed:", err.message);
     res.status(503).json({ error: "Search service unavailable" });
   }
+});
+
+// healthz endpoint
+app.get("/healthz", (req, res) => {
+  res.json({ status: "ok" });
 });
 
 // Autocomplete endpoint
@@ -136,6 +161,7 @@ app.get("/v1/autocomplete", async (req, res) => {
         brands: hit.brands,
       })),
     });
+    if (DEBUG) console.log("[autocomplete]", q, `→ ${results.hits.length} suggestions`);
   } catch (err) {
     console.error("Autocomplete failed:", err.message);
     res.status(503).json({ error: "Search service unavailable" });

@@ -8,5 +8,6 @@ const meilisearchClient = new MeiliSearch({
   apiKey: process.env.MEILISEARCH_API_KEY || "",
 });
 
+export const DEBUG = process.env.DEBUG === "1";
 export const INDEX_NAME = "products";
 export { meilisearchClient };

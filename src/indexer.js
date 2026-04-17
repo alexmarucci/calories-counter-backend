@@ -4,7 +4,7 @@ import { meilisearchClient, INDEX_NAME } from "./meilisearchClient.js";
 import { INDEX_CONFIG } from "./indexConfig.js";
 
 const JSONL_PATH = process.env.JSONL_PATH || "./openfoodfacts-products.jsonl";
-const BATCH_SIZE = 1000;
+const BATCH_SIZE = parseInt(process.env.BATCH_SIZE, 10) || 5000;
 
 function extractImageUrl(code, images) {
   if (!images) return null;
@@ -23,24 +23,123 @@ function extractImageUrl(code, images) {
   return `https://images.openfoodfacts.org/images/products/${codePath}/${frontKey}.${frontData.rev}.400.jpg`;
 }
 
-function extractNutriments(nutriments) {
-  if (!nutriments) return null;
-  const get = (key) => {
+function extractNutriments(record) {
+  if (!record) return null;
+
+  const nutrition = record.nutrition && typeof record.nutrition === "object"
+    ? record.nutrition
+    : {};
+
+  // Source 1: nutrition.aggregated_set — always per-100g, best source picked per nutrient
+  const hasAgg = nutrition.aggregated_set?.per === "100g"
+    && Object.keys(nutrition.aggregated_set.nutrients || {}).length > 0;
+  const aggNutrients = hasAgg ? nutrition.aggregated_set.nutrients : null;
+
+  // Source 1b: fallback to first input_sets entry where per=100g
+  const inputSets = nutrition.input_sets || [];
+  const inputNutrients = hasAgg
+    ? null // aggregated_set present, skip manual parsing
+    : (inputSets.find((s) => s.per === "100g") || {}).nutrients || {};
+
+  const getAgg = (key) => {
+    if (!aggNutrients) return null;
+    const entry = aggNutrients[key];
+    if (!entry || typeof entry.value !== "number") return null;
+    return entry.value;
+  };
+
+  const getAggGrams = (key) => {
+    if (!aggNutrients) return null;
+    const entry = aggNutrients[key];
+    if (!entry || typeof entry.value !== "number") return null;
+    if (entry.unit === "mg") return entry.value / 1000;
+    return entry.value;
+  };
+
+  const getInput = (key) => {
+    if (!inputNutrients) return null;
+    const entry = inputNutrients[key];
+    if (!entry || typeof entry.value !== "number") return null;
+    return entry.value;
+  };
+
+  const getInputGrams = (key) => {
+    if (!inputNutrients) return null;
+    const entry = inputNutrients[key];
+    if (!entry || typeof entry.value !== "number") return null;
+    if (entry.unit === "mg") return entry.value / 1000;
+    return entry.value;
+  };
+
+  // Source 2: top-level nutriments._100g fields
+  const nutriments = record.nutriments || {};
+  const getFromNutriments = (key) => {
     const val = nutriments[key];
     return typeof val === "number" ? val : null;
   };
-  const result = {
-    energy_kcal_100g: get("energy-kcal_100g"),
-    fat_100g: get("fat_100g"),
-    saturated_fat_100g: get("saturated-fat_100g"),
-    carbohydrates_100g: get("carbohydrates_100g"),
-    sugars_100g: get("sugars_100g"),
-    proteins_100g: get("proteins_100g"),
-    fiber_100g: get("fiber_100g"),
-    salt_100g: get("salt_100g"),
-    sodium_100g: get("sodium_100g"),
+
+  // Source 3: nutriscore.2021.data or nutriscore.2023.data (flat values + scoring)
+  let nsData = null;
+  const ns = record.nutriscore;
+  if (ns && typeof ns === "object") {
+    for (const yk of ["2021", "2023"]) {
+      const yd = ns[yk];
+      if (yd && typeof yd === "object" && typeof yd.data === "object") {
+        nsData = yd.data;
+        break;
+      }
+    }
+  }
+  const getFromNutriscore = (key) => {
+    if (!nsData) return null;
+    const val = nsData[key];
+    return typeof val === "number" ? val : null;
   };
-  // Only return if at least one value exists
+
+  // Convert kJ to kcal for energy fields from nutriscore (which uses kJ)
+  const energyKj = getFromNutriscore("energy") ?? getFromNutriscore("energy_value");
+  const energyFromNutriscore = energyKj !== null ? Math.round(energyKj / 4.184) : null;
+
+  const result = {
+    energy_kcal_100g:
+      getAgg("energy-kcal") ?? getInput("energy-kcal") ??
+      getFromNutriments("energy-kcal_100g") ??
+      energyFromNutriscore,
+    fat_100g:
+      getAgg("fat") ?? getInput("fat") ??
+      getFromNutriments("fat_100g") ??
+      getFromNutriscore("fat_value") ?? getFromNutriscore("fat"),
+    saturated_fat_100g:
+      getAgg("saturated-fat") ?? getInput("saturated-fat") ??
+      getFromNutriments("saturated-fat_100g") ??
+      getFromNutriscore("saturated_fat_value") ?? getFromNutriscore("saturated_fat"),
+    carbohydrates_100g:
+      getAgg("carbohydrates") ?? getInput("carbohydrates") ??
+      getFromNutriments("carbohydrates_100g"),
+    sugars_100g:
+      getAgg("sugars") ?? getInput("sugars") ??
+      getFromNutriments("sugars_100g") ??
+      getFromNutriscore("sugars_value") ?? getFromNutriscore("sugars"),
+    proteins_100g:
+      getAgg("proteins") ?? getInput("proteins") ??
+      getFromNutriments("proteins_100g") ??
+      getFromNutriscore("proteins_value") ?? getFromNutriscore("proteins"),
+    fiber_100g:
+      getAgg("fiber") ?? getInput("fiber") ??
+      getFromNutriments("fiber_100g") ??
+      getFromNutriscore("fiber_value") ?? getFromNutriscore("fiber"),
+    salt_100g:
+      getAggGrams("salt") ?? getInputGrams("salt") ??
+      getFromNutriments("salt_100g") ??
+      (getFromNutriscore("sodium_value") !== null
+        ? getFromNutriscore("sodium_value") * 2.5
+        : null),
+    sodium_100g:
+      getAggGrams("sodium") ?? getInputGrams("sodium") ??
+      getFromNutriments("sodium_100g") ??
+      getFromNutriscore("sodium_value") ?? getFromNutriscore("sodium"),
+  };
+
   if (Object.values(result).every((v) => v === null)) return null;
   return result;
 }
@@ -61,11 +160,24 @@ function mapRecord(record) {
     quantity: record.quantity || "",
     product_quantity: record.product_quantity || null,
     product_quantity_unit: record.product_quantity_unit || null,
+    serving_quantity: record.serving_quantity || null,
+    serving_quantity_unit: record.serving_quantity_unit || null,
     unique_scans_n: record.unique_scans_n || 0,
     image_url: extractImageUrl(record.code, record.images),
-    nutriments: extractNutriments(record.nutriments),
+    nutriments: extractNutriments(record),
     allergens_tags: record.allergens_tags || [],
     ingredients_text: record.ingredients_text || "",
+    ingredients: (record.ingredients || []).map((i) => ({
+      text: i.text || "",
+      vegan: i.vegan || null,
+      vegetarian: i.vegetarian || null,
+      percent: i.percent_estimate ?? i.percent_max ?? null,
+    })),
+    nova_group: record.nova_group ?? record.nova_groups ?? null,
+    labels_tags: record.labels_tags || [],
+    ingredients_analysis_tags: record.ingredients_analysis_tags || [],
+    additives_n: record.additives_n ?? 0,
+    stores: record.stores || "",
   };
 }
 
@@ -114,14 +226,14 @@ async function runIndexer() {
       batchNum++;
       try {
         const task = await index.addDocuments(batch, { primaryKey: "id" });
-        await meilisearchClient.waitForTask(task.taskUid);
+        await meilisearchClient.waitForTask(task.taskUid, { timeOutMs: 60_000 });
         totalIndexed += batch.length;
       } catch (err) {
         console.error(`Batch ${batchNum} failed: ${err.message}`);
         // Retry once
         try {
           const task = await index.addDocuments(batch, { primaryKey: "id" });
-          await meilisearchClient.waitForTask(task.taskUid);
+          await meilisearchClient.waitForTask(task.taskUid, { timeOutMs: 60_000 });
           totalIndexed += batch.length;
         } catch {
           console.error(
@@ -130,7 +242,10 @@ async function runIndexer() {
         }
       }
 
-      if (totalProcessed % 100000 === 0) {
+      if (batchNum === 1) {
+        console.log(`First batch indexed (${batch.length} docs) — indexing in progress...`);
+      }
+      if (totalProcessed % 50000 === 0) {
         console.log(
           `Progress: ${totalProcessed.toLocaleString()} processed, ${totalIndexed.toLocaleString()} indexed, ${totalSkipped.toLocaleString()} skipped`
         );
@@ -145,7 +260,7 @@ async function runIndexer() {
     batchNum++;
     try {
       const task = await index.addDocuments(batch, { primaryKey: "id" });
-      await meilisearchClient.waitForTask(task.taskUid);
+      await meilisearchClient.waitForTask(task.taskUid, { timeOutMs: 60_000 });
       totalIndexed += batch.length;
     } catch (err) {
       console.error(`Final batch failed: ${err.message}`);
